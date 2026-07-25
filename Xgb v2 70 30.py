@@ -1,0 +1,124 @@
+import pandas as pd
+import numpy as np
+import time
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import (accuracy_score, f1_score, precision_score,
+                             recall_score, classification_report,
+                             confusion_matrix)
+
+train_path = r"C:\mqttdataset\BCCC-IoT-MQTT-IDS-2025\New folder\strat\Train_Balanced_v2_70.csv"
+test_path  = r"C:\mqttdataset\BCCC-IoT-MQTT-IDS-2025\New folder\strat\Test_Balanced_v2_30.csv"
+output_dir = r"C:\mqttdataset\BCCC-IoT-MQTT-IDS-2025\New folder\strat"
+
+print("Loading training data...")
+train_df = pd.read_csv(train_path, low_memory=False)
+print(f"Train shape: {train_df.shape}")
+
+print("Loading test data...")
+test_df = pd.read_csv(test_path, low_memory=False)
+print(f"Test shape: {test_df.shape}")
+
+X_train = train_df.drop(columns=['label'])
+y_train_raw = train_df['label']
+X_test  = test_df.drop(columns=['label'])
+y_test_raw  = test_df['label']
+
+print("\nConverting all features to numeric...")
+X_train = X_train.apply(pd.to_numeric, errors='coerce').fillna(0)
+X_test  = X_test.apply(pd.to_numeric, errors='coerce').fillna(0)
+print("Done.")
+
+# XGBoost requires integer-encoded labels (0..n_classes-1)
+print("\nEncoding labels...")
+le = LabelEncoder()
+y_train = le.fit_transform(y_train_raw)
+y_test  = le.transform(y_test_raw)
+joblib.dump(le, f"{output_dir}\\label_encoder_XGB_v2_70_30.pkl")
+print(f"Classes: {list(le.classes_)}")
+
+model = XGBClassifier(
+    n_estimators=200,
+    max_depth=10,
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    tree_method='hist',
+    n_jobs=-1,
+    random_state=42,
+    eval_metric='mlogloss',
+    verbosity=1
+)
+
+print("\nTraining XGBoost...")
+train_start = time.time()
+model.fit(X_train, y_train)
+train_time = time.time() - train_start
+print(f"Training time: {train_time:.4f} seconds")
+
+joblib.dump(model, f"{output_dir}\\model_XGB_v2_70_30.pkl")
+print("Model saved.")
+
+print("\nTesting...")
+test_start = time.time()
+y_pred_enc = model.predict(X_test)
+test_time = time.time() - test_start
+print(f"Testing time: {test_time:.4f} seconds")
+
+# Decode back to original string labels for reporting/output
+y_pred = le.inverse_transform(y_pred_enc)
+y_test_labels = le.inverse_transform(y_test)
+
+pd.DataFrame({'y_true': y_test_labels, 'y_pred': y_pred}).to_csv(
+    f"{output_dir}\\Predictions_XGB_v2_70_30.csv", index=False)
+print("Predictions saved.")
+
+accuracy  = accuracy_score(y_test_labels, y_pred)
+f1        = f1_score(y_test_labels, y_pred, average='weighted')
+precision = precision_score(y_test_labels, y_pred, average='weighted', zero_division=0)
+recall    = recall_score(y_test_labels, y_pred, average='weighted', zero_division=0)
+
+print("\n========== XGBOOST RESULTS (v2 70:30) ==========")
+print(f"Accuracy:      {accuracy:.4f}")
+print(f"F1 Score:      {f1:.4f}")
+print(f"Precision:     {precision:.4f}")
+print(f"Recall:        {recall:.4f}")
+print(f"Training Time: {train_time:.4f} seconds")
+print(f"Testing Time:  {test_time:.4f} seconds")
+print("\n--- Per-Class Metrics ---")
+print(classification_report(y_test_labels, y_pred, zero_division=0))
+
+print("Generating confusion matrix...")
+labels = sorted(y_test_labels.unique() if hasattr(y_test_labels, 'unique') else np.unique(y_test_labels))
+cm = confusion_matrix(y_test_labels, y_pred, labels=labels)
+cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
+
+fig, ax = plt.subplots(figsize=(12, 8))
+sns.heatmap(cm_percent, annot=True, fmt='.1f', cmap='Blues',
+            xticklabels=labels, yticklabels=labels,
+            ax=ax, annot_kws={"size": 9})
+plt.title('Confusion Matrix - XGBoost v2 (70:30)\n(% of actual class)', fontsize=13)
+plt.ylabel('Actual', fontsize=11)
+plt.xlabel('Predicted', fontsize=11)
+plt.xticks(rotation=45, ha='right', fontsize=8)
+plt.yticks(rotation=0, fontsize=8)
+plt.tight_layout()
+plt.savefig(f"{output_dir}\\ConfusionMatrix_XGB_v2_70_30.png", dpi=120, bbox_inches='tight')
+plt.show()
+print("Confusion matrix saved.")
+
+pd.DataFrame({
+    'Model': ['XGBoost'],
+    'Dataset': ['v2'],
+    'Split': ['70:30'],
+    'Accuracy': [accuracy],
+    'F1 Score': [f1],
+    'Precision': [precision],
+    'Recall': [recall],
+    'Training Time (s)': [train_time],
+    'Testing Time (s)': [test_time]
+}).to_csv(f"{output_dir}\\Results_XGB_v2_70_30.csv", index=False)
+print("Results saved.")
